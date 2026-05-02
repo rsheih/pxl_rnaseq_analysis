@@ -1,0 +1,244 @@
+---
+title: "Diff Expression"
+author: "Rebekah Sheih"
+date: "2026-04-28"
+output:
+  html_document:
+    fig_width: 6
+    fig_height: 4
+    dpi: 200
+---
+
+```{r}
+library(GenomicFeatures)
+
+gtf_file <- "/Users/rebekahsheih/Desktop/pxl_rnaseq/gencode.v49.annotation.gtf"
+
+# build transcript database from GTF
+txdb <- makeTxDbFromGFF(gtf_file, format = "gtf")
+
+# extract transcript → gene mapping
+tx2gene <- transcripts(txdb, columns = c("tx_name", "gene_id"))
+
+tx2gene <- as.data.frame(tx2gene)[, c("tx_name", "gene_id")]
+
+colnames(tx2gene) <- c("TXNAME", "GENEID")
+
+# IMPORTANT: remove version numbers (critical for Salmon matching)
+tx2gene$TXNAME <- gsub("\\..*", "", tx2gene$TXNAME)
+tx2gene$GENEID <- gsub("\\..*", "", tx2gene$GENEID)
+
+# save it for your pipeline
+write.csv(tx2gene, "tx2gene.csv", row.names = FALSE)
+
+head(tx2gene)
+```
+
+# First pass at DEseq to quantify differential gene expression of the chr17 aligned reads.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, quiet=TRUE, echo=FALSE, message=FALSE}
+
+if (!require("tximport")) {
+  install.packages("tximport")}
+
+if (!require("readr")) {
+  install.packages("readr")}
+
+if (!require("ggplot2", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("ggplot2")
+
+if (!require("DESeq2", quietly = TRUE))
+  BiocManager::install("DESeq2")
+
+if (!require("ggrepel", quietly = TRUE))
+  BiocManager::install("ggrepel")
+
+if (!require("tximport", quietly = TRUE))
+  BiocManager::install("tximport")
+
+if (!require("GenomicFeatures", quietly = TRUE))
+  BiocManager::install("GenomicFeatures")
+
+if (!require("txdbmaker", quietly = TRUE))
+  BiocManager::install("txdbmaker")
+
+```
+
+```{r}
+library(tximport)
+library(txdbmaker)
+library(readr)
+library(here)
+library(DESeq2)
+library(ggrepel)
+library(GenomicFeatures)
+```
+
+
+
+# import salmon count files.
+```{r}
+
+# we import the salmon count files in the directory "salmon_quant"
+
+salmon_dir <- here("salmon_quant")
+
+```
+
+
+```{r five}
+# List all the quantification files
+files <- list.files(salmon_dir, pattern = "quant.sf", recursive = TRUE, full.names = TRUE)
+
+# Extract sample names from the file paths
+sample_names <- sapply(strsplit(files, "/"), function(x) x[length(x)-1])
+
+# Create a named vector of file paths
+names(files) <- sample_names
+
+# Import a transcript to gene table.
+tx2gene <- read.csv("tx2gene.csv", header = TRUE)
+head(tx2gene)
+
+# Import the quantification data
+txi <- tximport(
+  files,
+  type = "salmon",
+  tx2gene = tx2gene,
+  ignoreTxVersion = TRUE
+)
+
+# Extract the counts matrix
+counts_matrix <- txi$counts
+
+# Save the counts matrix to a file
+write.csv(counts_matrix, file = here("salmon_quant_matrix.csv"), row.names = TRUE)
+
+```
+
+```{r six}
+
+# Load the count matrix
+count_data <- read.csv(here("salmon_quant_matrix.csv"), row.names = 1)
+
+
+# View the first few rows of the count data
+head(count_data)
+```
+
+
+```{r seven}
+# Load the metadata
+# metadata <- read.csv(here("meta_smarce1_17.csv"))
+
+samples <- colnames(count_data)
+
+metadata <- data.frame(
+  condition = ifelse(grepl("U2OS", samples), "WT", "PMLKO")
+)
+
+rownames(metadata) <- samples
+metadata$condition <- factor(metadata$condition)
+
+```
+
+``` {r eight}
+# Ensure the sample names in metadata match the column names in count data
+# Replace hyphens with periods in the Run column
+# metadata$Run <- gsub("-", ".", metadata$Run)
+# rownames(metadata) <- metadata$Run
+
+# Check if the metadata matches the count data
+all(rownames(metadata) %in% colnames(count_data))  # Should return TRUE
+
+
+```
+
+
+```{r}
+
+# Round the count data to integers
+count_data <- round(count_data)
+
+# Create the DESeqDataSet object
+dds <- DESeqDataSetFromMatrix(
+    countData = count_data,
+    colData = metadata,
+    design = ~ condition  # Design formula: compare by 'condition' (WT vs PMLKO)
+)
+
+# Run DESeq2
+dds <- DESeq(dds)
+
+# Extract results for the comparison of deltaL vs WT
+res <- results(dds, contrast = c("condition", "PMLKO", "WT"))
+
+# remove large objects (just because they are big)
+rm(dds, txi, count_data, counts_matrix)
+ls()
+
+# View the results
+head(res)
+
+
+# Save the results to a file
+
+system("mkdir -p ./out")
+write.csv(as.data.frame(res), file = (here("out","deseq2_results.csv")))
+
+```
+## MA plot
+```{r MA}
+
+# Create an MA plot
+system("mkdir -p ./out/plots")
+
+pdf("./out/plots/MA.pdf")
+plotMA(res, main = "MA Plot", ylim = c(-5, 5))
+dev.off()
+
+```
+
+## Basic Volcano plot
+```{r volcano}
+
+
+# add "category" column for upregulated, downregulated, not significant.
+df <- as.data.frame(res)
+df$category <- "Not significant"
+df$category[df$padj < 0.05 & df$log2FoldChange > 1] <- "Upregulated"
+df$category[df$padj < 0.05 & df$log2FoldChange < -1] <- "Downregulated"
+df$category <- factor(df$category, 
+                      levels = c("Downregulated", "Not significant", "Upregulated"))
+
+# Create a volcano plot
+
+pdf("./out/plots/volcano.pdf")
+
+ggplot(df, aes(x = log2FoldChange, y = -log10(padj))) +
+    geom_point(aes(color = category), alpha = 0.7) +
+    scale_color_manual(values = c(
+        "Downregulated" = "blue",
+        "Not significant" = "gray",
+        "Upregulated" = "red"
+    )) +
+    labs(
+        title = "Volcano Plot",
+        x = "Log2 Fold Change",
+        y = "-Log10 Adjusted P-value",
+        color = "Gene regulation"
+    ) +
+    theme_minimal()
+
+dev.off()
+```
+
+
+

@@ -22,31 +22,6 @@ GRCh38.primary_assembly.genome.fa
 - samtools v1.22.1
 - edgeR v4.0.16
 
-## Recommended Structure
-project
-├── data
-│   ├── raw
-│   └── processed 
-├── genomes
-│   ├── salmon_index
-│   ├── star_index
-│   ├── gencode.v44.annotation.gtf
-│   ├── gencode.v49.transcripts.fa
-│   └── GRCh38.primary_assembly.genome.fa
-├── scripts
-│   ├── 1_get_files.sh 
-│   ├── 2_process.sh
-│   ├── 3a_salmon_index.sh
-│   ├── 3b_star_index.sh
-│   ├── 4a_run_salmon.sh
-│   ├── 4b_run_star.sh
-│   ├── 5_coordinate_sorting.sh
-│   └── 6_bam_to_bw.sh
-├── slurm
-├── star_out
-└── salmon_quant
-
-
 ## Notes
 Raw data not included.
 
